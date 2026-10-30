@@ -28,7 +28,7 @@ Tests
   test: it fails if the rule is ever weakened from >= to >.
 
 Pipeline
-- Stages: Build, Test, Package, Release Readiness, Approval/Deploy, Verify.
+- Stages: Build, Test, Package, Release Readiness, Approval, Deploy, Verify.
 - Test results and coverage publish with condition: always(), so a red run is
   still fully diagnosable from the Tests tab.
 - A failing Test stage blocks Package, Deploy and Verify.

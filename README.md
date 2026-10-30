@@ -182,12 +182,13 @@ Build ─► Test ─► Package ─► Release Readiness ─► Approval ─►
 | **Test** | Run pytest; publish JUnit + coverage with `condition: always()`; fail the stage on any test failure |
 | **Package** | Vendor runtime dependencies, produce `order-management-service-<version>.zip` and its SHA-256 |
 | **Release Readiness** | Render and publish the readiness report with real version, commit and checksum |
-| **Approval + Deploy** | Manual approval on the `production` environment, then zip-deploy the downloaded artifact |
+| **Approval** | Agentless manual validation after review of the readiness artifact |
+| **Deploy** | Zip-deploy the downloaded artifact to the `production` environment |
 | **Verify** | Poll `/health`, exercise the live API contract, publish verification evidence |
 
 ### Guarantees
 
-- **Results always publish.** The pytest step uses `continueOnError`, the publish tasks use `condition: always()`, and a subsequent gate step fails the stage. A red run is still fully diagnosable from the Tests tab.
+- **Results always publish.** The pytest step records its exit code, the publish tasks use `condition: always()`, and a subsequent gate step fails the stage. A red run is still fully diagnosable from the Tests tab.
 - **Failures block.** `Package`, `ReleaseReadiness`, `Deploy` and `Verify` all carry `condition: succeeded()`, so a failing `Test` stage skips the rest of the run.
 - **Artifacts are immutable and versioned.** One zip per build, named with the version and checksummed.
 - **No rebuild on deploy.** `Deploy` downloads the artifact from `Package`, verifies its checksum, and deploys with `SCM_DO_BUILD_DURING_DEPLOYMENT=false`.
@@ -200,7 +201,7 @@ Build ─► Test ─► Package ─► Release Readiness ─► Approval ─►
    | `azureSubscription` | `my-azure-service-connection` |
    | `webAppName` | `order-management-service` |
    | `resourceGroupName` | `rg-order-management` |
-2. **Environment** `production` (Pipelines → Environments) with an **Approvals** check assigning the approver group.
+2. **Environment** `production` (Pipelines → Environments) granting the pipeline deployment permission. The `Approval` stage provides the manual gate.
 3. **Service connection** — an Azure Resource Manager connection with Contributor on the resource group.
 
 ### Provision infrastructure
@@ -230,7 +231,7 @@ run proceeds to `Verify`. Full evidence is in [docs/pull-request.md](docs/pull-r
 
 ## Known Limitations
 
-- **In-memory storage** — orders are process-local and lost on restart or scale-out. Run a single instance until persistence is added.
+- **In-memory storage** — orders are process-local and lost on restart or scale-out. The startup command uses one worker; keep one App Service instance until persistence is added.
 - **No authentication or rate limiting** — intended to sit behind API Management or App Service authentication.
 - **Single-line orders** — one product per order.
 

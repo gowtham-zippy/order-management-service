@@ -4,7 +4,7 @@
 #  - Test results and coverage publish even when tests fail (condition: always()).
 #  - A failed Test stage blocks Package and every downstream stage (default succeeded() dependency).
 #  - Package produces a single versioned zip; Deploy consumes that exact artifact, never rebuilding.
-#  - Approval is enforced by the environment check on the 'production' environment.
+#  - An agentless manual validation stage blocks deployment until approval.
 
 trigger:
   branches:
@@ -82,17 +82,21 @@ stages:
               pip install -r requirements-dev.txt
             displayName: 'Install dependencies'
 
-          # continueOnError lets the publish steps run; the explicit gate below fails the stage.
           - script: |
+              set +e
+              mkdir -p \
+                "$(Build.ArtifactStagingDirectory)/test-results" \
+                "$(Build.ArtifactStagingDirectory)/coverage"
               python -m pytest \
                 --junitxml=$(Build.ArtifactStagingDirectory)/test-results/junit.xml \
                 --cov=app \
                 --cov-report=xml:$(Build.ArtifactStagingDirectory)/coverage/coverage.xml \
                 --cov-report=html:$(Build.ArtifactStagingDirectory)/coverage/html \
                 --cov-fail-under=$(minCoveragePercent)
+              TEST_EXIT_CODE=$?
+              echo "##vso[task.setvariable variable=pytestExitCode]$TEST_EXIT_CODE"
+              exit 0
             displayName: 'Run pytest'
-            continueOnError: true
-            name: pytestRun
 
           - task: PublishTestResults@2
             displayName: 'Publish test results (always)'
@@ -114,7 +118,7 @@ stages:
 
           # Hard gate: after results are published, fail the stage so Package never runs.
           - script: |
-              if [ "$(pytestRun.issuccess)" != "True" ]; then
+              if [ "$(pytestExitCode)" != "0" ]; then
                 echo "##vso[task.logissue type=error]Unit tests failed. Blocking Package, Deploy and Verify stages."
                 exit 1
               fi
@@ -220,16 +224,31 @@ stages:
             artifact: 'release-readiness-report'
             displayName: 'Publish readiness report'
 
-  # ---------------------------------------------------- APPROVAL + DEPLOY ---
-  - stage: Deploy
-    displayName: 'Approval and Deploy'
+  # -------------------------------------------------------------- APPROVAL ---
+  - stage: Approval
+    displayName: 'Production Approval'
     dependsOn: ReleaseReadiness
     condition: succeeded()
     jobs:
-      # Deployment job bound to the 'production' environment.
-      # Configure a manual Approval check on that environment in Azure DevOps:
-      #   Pipelines > Environments > production > Approvals and checks > Approvals
-      # The job will not start until an approver signs off.
+      - job: AwaitApproval
+        displayName: 'Wait for release approval'
+        pool: server
+        timeoutInMinutes: 1440
+        steps:
+          - task: ManualValidation@0
+            displayName: 'Approve production deployment'
+            timeoutInMinutes: 1440
+            inputs:
+              notifyUsers: ''
+              instructions: 'Review the release-readiness-report artifact, then approve or reject deployment.'
+              onTimeout: 'reject'
+
+  # ---------------------------------------------------------------- DEPLOY ---
+  - stage: Deploy
+    displayName: 'Deploy'
+    dependsOn: Approval
+    condition: succeeded()
+    jobs:
       - deployment: DeployToAppService
         displayName: 'Deploy to Azure App Service'
         environment: 'production'

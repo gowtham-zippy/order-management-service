@@ -55,7 +55,7 @@
 - **Target**: Azure App Service (Linux, Python 3.12) — `$(webAppName)`
 - **Method**: Zip Deploy of the pre-built artifact, `SCM_DO_BUILD_DURING_DEPLOYMENT=false`
 - **No rebuild**: Deploy stage downloads the artifact published by Package; it does not run pip install or any build step.
-- **Approval**: Manual approval check on the `production` environment must be granted before the deployment job starts.
+- **Approval**: The agentless `Approval` stage must complete before the `Deploy` stage can start.
 
 ## 5. Rollback Plan
 

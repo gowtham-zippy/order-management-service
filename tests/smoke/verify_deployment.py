@@ -45,6 +45,10 @@ class Checks:
         body = response.json()
         assert body["status"] == "healthy", f"unexpected status: {body}"
         assert body["service"] == "order-management-service", f"unexpected service: {body}"
+        if self.expected_version:
+            assert body.get("version") == self.expected_version, (
+                f"expected version {self.expected_version}, got {body.get('version')}"
+            )
         return f"status={body['status']} version={body.get('version')}"
 
     def create_order_no_discount(self) -> str:

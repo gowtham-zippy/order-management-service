@@ -60,8 +60,10 @@ deployment.
 | 9 | Low | Suggested replacing the in-memory store with SQLAlchemy and a database. | **Rejected** | The user story explicitly scopes this release to in-memory storage. Introducing a database would expand scope, add infrastructure and credentials, and delay delivery. The constraint is documented in the README and logged as follow-up. | Documented under *Known Limitations*; rollback plan notes no data migration is involved. |
 | 10 | Low | Suggested adding `GET /orders` list and `DELETE /orders/{id}` endpoints for completeness. | **Rejected** | Not in the acceptance criteria. Unrequested endpoints expand the attack surface and the test matrix without a consuming requirement. | N/A — deliberately out of scope. |
 | 11 | Low | Suggested caching `calculate_price` with `functools.lru_cache`. | **Rejected** | The function is pure arithmetic costing nanoseconds; caching on unbounded `Decimal` inputs would add memory growth and risk without measurable benefit. | N/A — no change made. |
+| 12 | High | Two Gunicorn workers each owned a separate in-memory repository, so retrieval could hit a different process than creation and return 404. | **Accepted** | Process-local storage requires a single worker until durable shared storage is introduced. | `startup.sh` runs one worker; existing create/retrieve coverage remains green. |
+| 13 | Medium | Deployment set `APP_VERSION`, but `/health` returned a static version and smoke verification ignored `--expected-version`. | **Accepted** | Verification must prove that the intended build is live, not merely that some healthy build responds. | The package reads `APP_VERSION`, and the smoke health check asserts the expected build version. |
 
-**Totals:** 11 findings — 7 accepted, 4 rejected.
+**Totals:** 13 findings — 9 accepted, 4 rejected.
 
 ## 5. Failure-Blocking Demonstration
 
@@ -110,7 +112,7 @@ impeded.
 - `Package` produces exactly one versioned zip, `order-management-service-1.0.$(Build.BuildId).zip`, plus a SHA-256 checksum.
 - `Deploy` downloads that artifact and runs `sha256sum -c` before deploying.
 - `SCM_DO_BUILD_DURING_DEPLOYMENT=false` guarantees App Service does not rebuild; the deployed bits are byte-identical to the tested bits.
-- Manual approval on the `production` environment gates the deployment job.
+- An agentless `Approval` stage gates deployment, which is tracked against the `production` environment.
 
 ## 7. Verification
 

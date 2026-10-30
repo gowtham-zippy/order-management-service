@@ -137,7 +137,7 @@ order retrieval, plus health. Emit JUnit XML and coverage XML.
 **Parent:** #XXX · **Estimate:** 6h · **Activity:** Deployment
 
 Author `azure-pipelines.yml` with stages Build → Test → Package → Release
-Readiness → Approval/Deploy → Verify. Publish test results with `condition:
+Readiness → Approval → Deploy → Verify. Publish test results with `condition:
 always()`. Fail the `Test` stage on any test failure so downstream stages are
 skipped. Produce a versioned zip plus SHA-256 checksum. Factor reusable steps
 into `pipelines/templates/`.
@@ -161,12 +161,13 @@ and checksum substituted, and publish it as an artifact.
 ### Task #XX7 — Configure the approval gate and App Service deployment
 **Parent:** #XXX · **Estimate:** 4h · **Activity:** Deployment
 
-Create the `production` environment with a manual Approval check. Implement
+Create an agentless `Approval` stage using `ManualValidation@0` and the
+`production` deployment environment. Implement
 `pipelines/templates/deploy-appservice.yml` to zip-deploy the **downloaded**
 artifact with `SCM_DO_BUILD_DURING_DEPLOYMENT=false`. Verify the artifact
 checksum before deploying.
 
-**Done when:** the deployment job waits for approval, deploys the identical artifact produced by `Package`, and performs no rebuild.
+**Done when:** deployment cannot start before approval, deploys the identical artifact produced by `Package`, and performs no rebuild.
 
 ---
 

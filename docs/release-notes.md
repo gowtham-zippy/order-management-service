@@ -42,7 +42,7 @@ return `404` with a descriptive message.
 
 | Work item | Description |
 |---|---|
-| #XX3 | Copilot review completed — 11 findings, 7 accepted, 4 rejected |
+| #XX3 | Copilot review completed — 13 findings, 9 accepted, 4 rejected |
 | #XX4 | 18 unit tests; coverage above the 80% gate |
 | #XX5 | Seven-stage pipeline with test-failure blocking and immutable artifacts |
 | #XX6 | Automated release readiness report |

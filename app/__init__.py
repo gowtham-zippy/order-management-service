@@ -1,3 +1,5 @@
 """Order Management Service application package."""
 
-__version__ = "1.0.0"
+import os
+
+__version__ = os.getenv("APP_VERSION", "1.0.0")

@@ -43,11 +43,16 @@ steps:
       set -e
       OUT="$(Build.ArtifactStagingDirectory)/verification"
       mkdir -p "$OUT"
+      OVERALL_RESULT="FAIL"
+      if [ -f "$OUT/results.json" ]; then
+        OVERALL_RESULT=$(python -c 'import json, sys; print(json.load(open(sys.argv[1]))["overall"])' "$OUT/results.json")
+      fi
       sed \
         -e "s|{{VERSION}}|${{ parameters.expectedVersion }}|g" \
         -e "s|{{BASE_URL}}|${{ parameters.baseUrl }}|g" \
         -e "s|{{BUILD_ID}}|$(Build.BuildId)|g" \
         -e "s|{{VERIFIED_UTC}}|$(date -u +%Y-%m-%dT%H:%M:%SZ)|g" \
+        -e "s|{{OVERALL_RESULT}}|${OVERALL_RESULT}|g" \
         docs/templates/verification-evidence.md > "$OUT/verification-evidence-${{ parameters.expectedVersion }}.md"
       cat "$OUT/verification-evidence-${{ parameters.expectedVersion }}.md"
     displayName: 'Render verification evidence'
