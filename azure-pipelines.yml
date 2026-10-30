@@ -233,7 +233,7 @@ stages:
       - job: AwaitApproval
         displayName: 'Wait for release approval'
         pool: server
-        timeoutInMinutes: 1440
+        timeoutInMinutes: 4320
         steps:
           - task: ManualValidation@0
             displayName: 'Approve production deployment'
