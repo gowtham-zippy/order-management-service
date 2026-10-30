@@ -1,0 +1,69 @@
+# Deploys a pre-built, already-approved zip to Azure App Service (Linux, Python).
+# This template never builds or reinstalls application code.
+
+parameters:
+  - name: azureSubscription
+    type: string
+  - name: webAppName
+    type: string
+  - name: resourceGroupName
+    type: string
+  - name: packagePath
+    type: string
+  - name: buildVersion
+    type: string
+  - name: appServiceSlot
+    type: string
+    default: ''
+
+steps:
+  - task: AzureAppServiceSettings@1
+    displayName: 'Apply App Service settings'
+    inputs:
+      azureSubscription: ${{ parameters.azureSubscription }}
+      appName: ${{ parameters.webAppName }}
+      resourceGroupName: ${{ parameters.resourceGroupName }}
+      ${{ if ne(parameters.appServiceSlot, '') }}:
+        slotName: ${{ parameters.appServiceSlot }}
+      appSettings: |
+        [
+          { "name": "SCM_DO_BUILD_DURING_DEPLOYMENT", "value": "false", "slotSetting": false },
+          { "name": "WEBSITES_ENABLE_APP_SERVICE_STORAGE", "value": "false", "slotSetting": false },
+          { "name": "APP_VERSION", "value": "${{ parameters.buildVersion }}", "slotSetting": false },
+          { "name": "PYTHONPATH", "value": "/home/site/wwwroot:/home/site/wwwroot/.python_packages_local", "slotSetting": false }
+        ]
+
+  - task: AzureWebApp@1
+    displayName: 'Deploy ${{ parameters.buildVersion }} to ${{ parameters.webAppName }}'
+    inputs:
+      azureSubscription: ${{ parameters.azureSubscription }}
+      appType: 'webAppLinux'
+      appName: ${{ parameters.webAppName }}
+      resourceGroupName: ${{ parameters.resourceGroupName }}
+      ${{ if ne(parameters.appServiceSlot, '') }}:
+        deployToSlotOrASE: true
+        slotName: ${{ parameters.appServiceSlot }}
+      package: ${{ parameters.packagePath }}
+      runtimeStack: 'PYTHON|3.12'
+      startUpCommand: 'bash /home/site/wwwroot/startup.sh'
+      deploymentMethod: 'zipDeploy'
+
+  - task: AzureCLI@2
+    displayName: 'Wait for App Service to report Running'
+    inputs:
+      azureSubscription: ${{ parameters.azureSubscription }}
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        set -e
+        for i in $(seq 1 30); do
+          STATE=$(az webapp show \
+            --name "${{ parameters.webAppName }}" \
+            --resource-group "${{ parameters.resourceGroupName }}" \
+            --query state -o tsv)
+          echo "Attempt $i: state=$STATE"
+          [ "$STATE" = "Running" ] && exit 0
+          sleep 10
+        done
+        echo "##vso[task.logissue type=error]App Service did not reach Running state."
+        exit 1

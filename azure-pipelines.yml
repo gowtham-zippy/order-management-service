@@ -1,0 +1,279 @@
+# Multi-stage pipeline: Build -> Test -> Package -> Release Readiness -> Approval -> Deploy -> Verify
+#
+# Key guarantees:
+#  - Test results and coverage publish even when tests fail (condition: always()).
+#  - A failed Test stage blocks Package and every downstream stage (default succeeded() dependency).
+#  - Package produces a single versioned zip; Deploy consumes that exact artifact, never rebuilding.
+#  - Approval is enforced by the environment check on the 'production' environment.
+
+trigger:
+  branches:
+    include:
+      - main
+      - feature/*
+
+pr:
+  branches:
+    include:
+      - main
+
+name: $(Date:yyyyMMdd)$(Rev:.r)
+
+variables:
+  - group: order-service-vars        # expects: azureSubscription, webAppName, resourceGroupName
+  - name: pythonVersion
+    value: '3.12'
+  - name: buildVersion
+    value: '1.0.$(Build.BuildId)'
+  - name: artifactName
+    value: 'order-service-package'
+  - name: packageFileName
+    value: 'order-management-service-$(buildVersion).zip'
+  - name: minCoveragePercent
+    value: 80
+
+stages:
+  # ----------------------------------------------------------------- BUILD ---
+  - stage: Build
+    displayName: 'Build'
+    jobs:
+      - job: BuildJob
+        displayName: 'Restore dependencies and lint'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - template: pipelines/templates/setup-python.yml
+            parameters:
+              pythonVersion: $(pythonVersion)
+
+          - script: |
+              set -e
+              python -m pip install --upgrade pip
+              pip install -r requirements-dev.txt
+            displayName: 'Install dependencies'
+
+          - script: |
+              set -e
+              python -m compileall app
+              flake8 app tests
+            displayName: 'Lint and compile check'
+
+          - script: echo "##vso[build.updatebuildnumber]$(buildVersion)"
+            displayName: 'Stamp build number with semantic version'
+
+  # ------------------------------------------------------------------ TEST ---
+  - stage: Test
+    displayName: 'Test'
+    dependsOn: Build
+    condition: succeeded()
+    jobs:
+      - job: UnitTests
+        displayName: 'Unit tests and coverage'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - template: pipelines/templates/setup-python.yml
+            parameters:
+              pythonVersion: $(pythonVersion)
+
+          - script: |
+              set -e
+              python -m pip install --upgrade pip
+              pip install -r requirements-dev.txt
+            displayName: 'Install dependencies'
+
+          # continueOnError lets the publish steps run; the explicit gate below fails the stage.
+          - script: |
+              python -m pytest \
+                --junitxml=$(Build.ArtifactStagingDirectory)/test-results/junit.xml \
+                --cov=app \
+                --cov-report=xml:$(Build.ArtifactStagingDirectory)/coverage/coverage.xml \
+                --cov-report=html:$(Build.ArtifactStagingDirectory)/coverage/html \
+                --cov-fail-under=$(minCoveragePercent)
+            displayName: 'Run pytest'
+            continueOnError: true
+            name: pytestRun
+
+          - task: PublishTestResults@2
+            displayName: 'Publish test results (always)'
+            condition: always()
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: '$(Build.ArtifactStagingDirectory)/test-results/junit.xml'
+              testRunTitle: 'Order Management Service - $(buildVersion)'
+              mergeTestResults: true
+              failTaskOnFailedTests: false
+              publishRunAttachments: true
+
+          - task: PublishCodeCoverageResults@2
+            displayName: 'Publish code coverage (always)'
+            condition: always()
+            inputs:
+              summaryFileLocation: '$(Build.ArtifactStagingDirectory)/coverage/coverage.xml'
+              pathToSources: '$(System.DefaultWorkingDirectory)'
+
+          # Hard gate: after results are published, fail the stage so Package never runs.
+          - script: |
+              if [ "$(pytestRun.issuccess)" != "True" ]; then
+                echo "##vso[task.logissue type=error]Unit tests failed. Blocking Package, Deploy and Verify stages."
+                exit 1
+              fi
+              echo "All tests passed."
+            displayName: 'Quality gate - fail stage on test failure'
+            condition: always()
+
+  # --------------------------------------------------------------- PACKAGE ---
+  - stage: Package
+    displayName: 'Package'
+    dependsOn: Test
+    condition: succeeded()          # blocked automatically when Test fails
+    jobs:
+      - job: PackageJob
+        displayName: 'Create versioned zip artifact'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - template: pipelines/templates/setup-python.yml
+            parameters:
+              pythonVersion: $(pythonVersion)
+
+          # Vendor runtime dependencies so the deployed zip is self-contained.
+          - script: |
+              set -e
+              python -m pip install --upgrade pip
+              pip install --target="$(Build.BinariesDirectory)/site-packages" -r requirements.txt
+            displayName: 'Vendor runtime dependencies'
+
+          - script: |
+              set -e
+              STAGE="$(Build.BinariesDirectory)/app-package"
+              mkdir -p "$STAGE"
+              cp -r app "$STAGE"/
+              cp requirements.txt startup.sh "$STAGE"/
+              cp -r "$(Build.BinariesDirectory)/site-packages" "$STAGE"/.python_packages_local
+              echo "$(buildVersion)" > "$STAGE/VERSION"
+              cat > "$STAGE/build-info.json" <<EOF
+              {
+                "version": "$(buildVersion)",
+                "buildId": "$(Build.BuildId)",
+                "sourceBranch": "$(Build.SourceBranch)",
+                "commit": "$(Build.SourceVersion)",
+                "builtUtc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              }
+              EOF
+            displayName: 'Stage application payload'
+
+          - task: ArchiveFiles@2
+            displayName: 'Archive versioned zip'
+            inputs:
+              rootFolderOrFile: '$(Build.BinariesDirectory)/app-package'
+              includeRootFolder: false
+              archiveType: 'zip'
+              archiveFile: '$(Build.ArtifactStagingDirectory)/$(packageFileName)'
+              replaceExistingArchive: true
+
+          - script: |
+              set -e
+              cd "$(Build.ArtifactStagingDirectory)"
+              sha256sum "$(packageFileName)" > "$(packageFileName).sha256"
+              cat "$(packageFileName).sha256"
+            displayName: 'Generate artifact checksum'
+
+          - publish: '$(Build.ArtifactStagingDirectory)'
+            artifact: $(artifactName)
+            displayName: 'Publish immutable build artifact'
+
+  # ------------------------------------------------- RELEASE READINESS ------
+  - stage: ReleaseReadiness
+    displayName: 'Release Readiness'
+    dependsOn: Package
+    condition: succeeded()
+    jobs:
+      - job: ReadinessReport
+        displayName: 'Generate release readiness report'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - download: current
+            artifact: $(artifactName)
+            displayName: 'Download build artifact'
+
+          - script: |
+              set -e
+              OUT="$(Build.ArtifactStagingDirectory)/release-readiness"
+              mkdir -p "$OUT"
+              CHECKSUM=$(cut -d' ' -f1 "$(Pipeline.Workspace)/$(artifactName)/$(packageFileName).sha256")
+              sed \
+                -e "s|{{VERSION}}|$(buildVersion)|g" \
+                -e "s|{{BUILD_ID}}|$(Build.BuildId)|g" \
+                -e "s|{{COMMIT}}|$(Build.SourceVersion)|g" \
+                -e "s|{{BRANCH}}|$(Build.SourceBranch)|g" \
+                -e "s|{{ARTIFACT}}|$(packageFileName)|g" \
+                -e "s|{{CHECKSUM}}|${CHECKSUM}|g" \
+                -e "s|{{GENERATED_UTC}}|$(date -u +%Y-%m-%dT%H:%M:%SZ)|g" \
+                docs/templates/release-readiness-report.md > "$OUT/release-readiness-$(buildVersion).md"
+              echo "--- Release Readiness Report ---"
+              cat "$OUT/release-readiness-$(buildVersion).md"
+            displayName: 'Render readiness report from template'
+
+          - publish: '$(Build.ArtifactStagingDirectory)/release-readiness'
+            artifact: 'release-readiness-report'
+            displayName: 'Publish readiness report'
+
+  # ---------------------------------------------------- APPROVAL + DEPLOY ---
+  - stage: Deploy
+    displayName: 'Approval and Deploy'
+    dependsOn: ReleaseReadiness
+    condition: succeeded()
+    jobs:
+      # Deployment job bound to the 'production' environment.
+      # Configure a manual Approval check on that environment in Azure DevOps:
+      #   Pipelines > Environments > production > Approvals and checks > Approvals
+      # The job will not start until an approver signs off.
+      - deployment: DeployToAppService
+        displayName: 'Deploy to Azure App Service'
+        environment: 'production'
+        pool:
+          vmImage: 'ubuntu-latest'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: $(artifactName)
+                  displayName: 'Download the approved artifact (no rebuild)'
+
+                - script: |
+                    set -e
+                    cd "$(Pipeline.Workspace)/$(artifactName)"
+                    sha256sum -c "$(packageFileName).sha256"
+                    echo "Artifact integrity verified - deploying the exact bits that were tested."
+                  displayName: 'Verify artifact checksum'
+
+                - template: pipelines/templates/deploy-appservice.yml
+                  parameters:
+                    azureSubscription: $(azureSubscription)
+                    webAppName: $(webAppName)
+                    resourceGroupName: $(resourceGroupName)
+                    packagePath: '$(Pipeline.Workspace)/$(artifactName)/$(packageFileName)'
+                    buildVersion: $(buildVersion)
+
+  # ---------------------------------------------------------------- VERIFY ---
+  - stage: Verify
+    displayName: 'Post-Deployment Verification'
+    dependsOn: Deploy
+    condition: succeeded()
+    jobs:
+      - job: SmokeTests
+        displayName: 'Health and API verification'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - template: pipelines/templates/setup-python.yml
+            parameters:
+              pythonVersion: $(pythonVersion)
+
+          - template: pipelines/templates/verify-deployment.yml
+            parameters:
+              baseUrl: 'https://$(webAppName).azurewebsites.net'
+              expectedVersion: $(buildVersion)

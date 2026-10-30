@@ -1,0 +1,59 @@
+# Post-deployment verification: liveness, health contract, and live API behaviour.
+
+parameters:
+  - name: baseUrl
+    type: string
+  - name: expectedVersion
+    type: string
+  - name: maxAttempts
+    type: number
+    default: 20
+
+steps:
+  - script: |
+      set -e
+      echo "Waiting for ${{ parameters.baseUrl }}/health ..."
+      for i in $(seq 1 ${{ parameters.maxAttempts }}); do
+        CODE=$(curl -s -o /dev/null -w "%{http_code}" "${{ parameters.baseUrl }}/health" || echo 000)
+        echo "Attempt $i: HTTP $CODE"
+        if [ "$CODE" = "200" ]; then
+          echo "Service is live."
+          exit 0
+        fi
+        sleep 15
+      done
+      echo "##vso[task.logissue type=error]Health endpoint never returned 200."
+      exit 1
+    displayName: 'Health check - wait for liveness'
+
+  - script: |
+      set -e
+      pip install --quiet httpx pytest
+    displayName: 'Install verification dependencies'
+
+  - script: |
+      set -e
+      python tests/smoke/verify_deployment.py \
+        --base-url "${{ parameters.baseUrl }}" \
+        --expected-version "${{ parameters.expectedVersion }}" \
+        --output "$(Build.ArtifactStagingDirectory)/verification/results.json"
+    displayName: 'API verification - orders contract and discount rules'
+
+  - script: |
+      set -e
+      OUT="$(Build.ArtifactStagingDirectory)/verification"
+      mkdir -p "$OUT"
+      sed \
+        -e "s|{{VERSION}}|${{ parameters.expectedVersion }}|g" \
+        -e "s|{{BASE_URL}}|${{ parameters.baseUrl }}|g" \
+        -e "s|{{BUILD_ID}}|$(Build.BuildId)|g" \
+        -e "s|{{VERIFIED_UTC}}|$(date -u +%Y-%m-%dT%H:%M:%SZ)|g" \
+        docs/templates/verification-evidence.md > "$OUT/verification-evidence-${{ parameters.expectedVersion }}.md"
+      cat "$OUT/verification-evidence-${{ parameters.expectedVersion }}.md"
+    displayName: 'Render verification evidence'
+    condition: always()
+
+  - publish: '$(Build.ArtifactStagingDirectory)/verification'
+    artifact: 'verification-evidence'
+    displayName: 'Publish verification evidence'
+    condition: always()

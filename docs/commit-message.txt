@@ -1,0 +1,44 @@
+feat(orders): add order management service with discount pricing and CI/CD
+
+Implements the Order Management Service: order creation, retrieval and a
+health probe backed by a thread-safe in-memory repository, together with the
+multi-stage Azure DevOps pipeline that builds, tests, packages, gates and
+deploys it.
+
+Application
+- POST /orders creates an order and returns 201 with the full price breakdown
+  (subtotal, discount_applied, discount_amount, total).
+- GET /orders/{id} returns 200 for a known order and a clean 404 with a
+  descriptive detail message otherwise - no stack traces are leaked.
+- GET /health returns the service name, status and deployed version for use by
+  the pipeline verification stage and App Service health checks.
+- Pricing applies a 10% discount when the subtotal is greater than or equal to
+  1000. The threshold is inclusive; 1000.00 itself qualifies.
+- All monetary arithmetic uses Decimal with ROUND_HALF_UP to two places to
+  avoid binary floating-point drift on currency values.
+- Validation rejects a missing or blank product_name, a quantity that is not
+  greater than zero, and a unit_price that is not greater than zero, with 422
+  and a field-level error payload.
+
+Tests
+- 18 unit tests covering the three discount paths (below, exactly at, and above
+  the threshold), the three validation failures, existing-order retrieval,
+  missing-order retrieval and health.
+- test_subtotal_exactly_at_threshold_gets_discount is the designated boundary
+  test: it fails if the rule is ever weakened from >= to >.
+
+Pipeline
+- Stages: Build, Test, Package, Release Readiness, Approval/Deploy, Verify.
+- Test results and coverage publish with condition: always(), so a red run is
+  still fully diagnosable from the Tests tab.
+- A failing Test stage blocks Package, Deploy and Verify.
+- Package emits a single versioned zip plus a SHA-256 checksum; Deploy
+  downloads and checksum-verifies that same artifact and never rebuilds
+  (SCM_DO_BUILD_DURING_DEPLOYMENT=false).
+- Verify asserts liveness and the live API contract, then publishes evidence.
+
+Known constraint: storage is in-memory and therefore process-local. Orders do
+not survive a restart or scale-out. This is accepted for the current release
+and persistence is tracked as follow-up work.
+
+Related work items: #XXX #XX1 #XX2 #XX3 #XX4 #XX5 #XX6 #XX7 #XX8
